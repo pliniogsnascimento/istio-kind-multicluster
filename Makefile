@@ -16,7 +16,9 @@ NODE_ISTIO_1=
 SELF_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 include $(SELF_DIR)/tools/certs/Makefile.selfsigned.mk
 
-run: clusters vars routes metalb certs istio sample
+run: clusters vars routes metalb certs istio sample waypoint
+
+run-sidecar: clusters vars routes metalb certs istio-sidecar sample-sidecar
 
 clusters:
 	bash -c "source scripts/kind.sh && create_cluster $(CLUSTER1) '$(CLUSTER1_POD_CIDR)' '$(CLUSTER1_SERVICE_CIDR)'"
@@ -29,6 +31,12 @@ vars:
 istio:
 	bash -c "source scripts/istio.sh && deploy_istio kind-$(CLUSTER1) $(CLUSTER1) network1"
 	bash -c "source scripts/istio.sh && deploy_istio kind-$(CLUSTER2) $(CLUSTER2) network2"
+	istioctl create-remote-secret --context=kind-$(CLUSTER2) --name=$(CLUSTER2) --server https://$(NODE_ISTIO_1):6443 | kubectl apply -f - --context=kind-$(CLUSTER1)
+	istioctl create-remote-secret --context=kind-$(CLUSTER1) --name=$(CLUSTER1) --server https://$(NODE_ISTIO_0):6443 | kubectl apply -f - --context=kind-$(CLUSTER2)
+
+istio-sidecar:
+	bash -c "source scripts/istio.sh && deploy_istio_sidecar kind-$(CLUSTER1) $(CLUSTER1) network1"
+	bash -c "source scripts/istio.sh && deploy_istio_sidecar kind-$(CLUSTER2) $(CLUSTER2) network2"
 	istioctl create-remote-secret --context=kind-$(CLUSTER2) --name=$(CLUSTER2) --server https://$(NODE_ISTIO_1):6443 | kubectl apply -f - --context=kind-$(CLUSTER1)
 	istioctl create-remote-secret --context=kind-$(CLUSTER1) --name=$(CLUSTER1) --server https://$(NODE_ISTIO_0):6443 | kubectl apply -f - --context=kind-$(CLUSTER2)
 
@@ -45,8 +53,12 @@ delete:
 	kind delete cluster --name $(CLUSTER2)
 
 sample:
-	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER1) $(CLUSTER1)"
-	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER2) $(CLUSTER2)"
+	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER1) $(CLUSTER1) samples/ambient"
+	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER2) $(CLUSTER2) samples/ambient"
+
+sample-sidecar:
+	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER1) $(CLUSTER1) samples/sidecar"
+	bash -c "source scripts/istio.sh && deploy_sample kind-$(CLUSTER2) $(CLUSTER2) samples/sidecar"
 
 clear-certs:
 	rm -r certs/* || true
@@ -64,12 +76,7 @@ sec-baseline:
 	kubectl apply -f samples/security --context kind-$(CLUSTER2)
 
 waypoint:
-	kubectl apply -f samples/ambient --context kind-$(CLUSTER1) -n app1
-	kubectl apply -f samples/ambient --context kind-$(CLUSTER1) -n curl
-	kubectl apply -f samples/ambient --context kind-$(CLUSTER2) -n app1
-	kubectl apply -f samples/ambient --context kind-$(CLUSTER2) -n curl
-	
-	kubectl --context kind-$(CLUSTER1) label ns app1 istio.io/use-waypoint=waypoint
-	kubectl --context kind-$(CLUSTER1) label ns curl istio.io/use-waypoint=waypoint
-	kubectl --context kind-$(CLUSTER2) label ns app1 istio.io/use-waypoint=waypoint
-	kubectl --context kind-$(CLUSTER2) label ns curl istio.io/use-waypoint=waypoint
+	kubectl apply -f samples/ambient/waypoint.yaml --context kind-$(CLUSTER1) -n app1
+	kubectl apply -f samples/ambient/waypoint.yaml --context kind-$(CLUSTER1) -n curl
+	kubectl apply -f samples/ambient/waypoint.yaml --context kind-$(CLUSTER2) -n app1
+	kubectl apply -f samples/ambient/waypoint.yaml --context kind-$(CLUSTER2) -n curl

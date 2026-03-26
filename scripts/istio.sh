@@ -63,115 +63,69 @@ EOF
     echo "EW Gateway deployed on cluster $cluster"
 }
 
+function deploy_istio_sidecar() {
+    local context=$1
+    local cluster=$2
+    local network=$3
+    local meshID=$4
+
+    echo "Deploying istio (sidecar) on $context"
+
+    # Deploy gatewayapi
+    kubectl get crd gateways.gateway.networking.k8s.io --context=$context &> /dev/null || \
+  	kubectl apply --context=$context --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
+	kubectl wait --context=$context --for=condition=established crd/gateways.gateway.networking.k8s.io --timeout=60s
+
+    echo "Gateway API deployed on cluster $cluster"
+
+    # Create istio-system namespace and label it with the network name for each cluster
+	kubectl create ns istio-system --context=$context || true
+	kubectl --context=$context label namespace istio-system topology.istio.io/network=$network
+    
+    # Configure istio CA
+    kubectl --context=$context create secret generic cacerts -n istio-system \
+        --from-file=certs/$cluster/ca-cert.pem \
+        --from-file=certs/$cluster/ca-key.pem \
+        --from-file=certs/$cluster/root-cert.pem \
+        --from-file=certs/$cluster/cert-chain.pem
+
+	# Install Istio with the default sidecar profile in each cluster
+	helm install istio-base istio/base -n istio-system --kube-context $context
+	helm install istiod istio/istiod -n istio-system --kube-context $context \
+		--set global.meshID=$meshID \
+		--set global.multiCluster.clusterName=$cluster \
+		--set global.network=$network \
+		--set meshConfig.accessLogFile=/dev/stdout
+
+    echo "Istio (sidecar) deployed on cluster $cluster"
+
+    cat <<EOF | kubectl apply --context=$context -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: cross-cluster
+    port: 15443
+    protocol: TLS
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: All
+EOF
+
+    echo "EW Gateway (sidecar) deployed on cluster $cluster"
+}
+
 function deploy_sample() {
     local context=$1
     local cluster=$2
+    local samples_dir=${3:-samples/ambient}
 
-    cat <<EOF | kubectl apply --context=$context -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: app1
-  labels:
-    istio.io/dataplane-mode: ambient
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: app1
-  namespace: app1
----
-apiVersion: v1
-data:
-  index.html: hello from $cluster
-kind: ConfigMap
-metadata:
-  name: app1
-  namespace: app1
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  labels:
-    app: app1
-  name: app1
-  namespace: app1
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: app1
-  strategy: {}
-  template:
-    metadata:
-      labels:
-        app: app1
-    spec:
-      serviceAccountName: app1
-      containers:
-      - image: nginx
-        name: nginx
-        resources: {}
-        volumeMounts:
-        - mountPath: /usr/share/nginx/html
-          name: html
-      volumes:
-      - name: html
-        configMap:
-          name: app1
----
-apiVersion: v1
-kind: Service
-metadata:
-  labels:
-    app: app1
-  name: app1
-  namespace: app1
-spec:
-  ports:
-  - port: 80
-    protocol: TCP
-    targetPort: 80
-  selector:
-    app: app1
-status:
-  loadBalancer: {}
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: curl
-  labels:
-    istio.io/dataplane-mode: ambient
-spec: {}
-status: {}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: curl
-  namespace: curl
----
-apiVersion: v1
-kind: Pod
-metadata:
-  labels:
-    run: curl
-  name: curl
-  namespace: curl
-spec:
-  serviceAccountName: curl
-  containers:
-  - command:
-    - /bin/sh
-    - -c
-    - while true; do curl -v http://app1.app1.svc.cluster.local; sleep 3; done
-    image: nicolaka/netshoot
-    name: curl
-    resources: {}
-  dnsPolicy: ClusterFirst
-  restartPolicy: Always
-status: {}
-EOF
-
+    sed "s/kind-cluster/$cluster/" $samples_dir/app1.yaml | kubectl --context=$context apply -f -
+    kubectl --context=$context apply -f $samples_dir/curl-pod.yaml
 }

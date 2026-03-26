@@ -3,7 +3,7 @@ kind: Namespace
 metadata:
   name: app1
   labels:
-    istio.io/dataplane-mode: ambient
+    istio-injection: enabled
 ---
 apiVersion: v1
 kind: ServiceAccount
