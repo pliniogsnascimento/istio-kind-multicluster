@@ -4,34 +4,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository automates a two-cluster Istio multicluster deployment using Kind (Kubernetes in Docker) and the Istio Ambient profile. It demonstrates secure, multi-network pod-to-pod communication across two Kubernetes clusters with shared mTLS trust.
+This repository automates two-cluster Istio multicluster deployments using Kind (Kubernetes in Docker). Each deployment model is self-contained under `deployments/<model>/` with its own Makefile, scripts, and samples.
 
 **Prerequisites:** Docker, kind, kubectl, helm, istioctl, openssl
 
 ## Common Commands
 
 ```bash
-# Full deployment (ambient mode)
-make run
+# List available deployment models
+make help
 
-# Full deployment (sidecar mode)
-make run-sidecar
+# Full deployment — ambient mode
+make multi-primary-ambient
+# or equivalently:
+make -C deployments/multi-primary-ambient run
 
-# Tear down both clusters
-make delete
+# Full deployment — sidecar mode
+make multi-primary-sidecar
+# or equivalently:
+make -C deployments/multi-primary-sidecar run
 
-# Step-by-step targets
-make clusters      # Create Kind clusters
-make vars          # Extract node IPs into NODE_ISTIO_0 / NODE_ISTIO_1
-make routes        # Configure inter-cluster pod routing
-make metalb        # Deploy MetalLB with IP pools
-make certs         # Generate root CA + per-cluster intermediate CAs
-make istio         # Deploy Istio (ambient) + East-West gateways
-make sample        # Deploy test apps (nginx + curl)
-make waypoint      # Create waypoint gateways
-make sec-baseline  # Apply AuthorizationPolicy + PeerAuthentication
-make injection     # Enable sidecar injection (for sidecar mode)
-make clear-certs   # Remove generated certificate files
+# Per-model step-by-step targets (ambient example)
+make -C deployments/multi-primary-ambient clusters     # Create Kind clusters
+make -C deployments/multi-primary-ambient vars         # Extract node IPs
+make -C deployments/multi-primary-ambient routes       # Configure inter-cluster routing
+make -C deployments/multi-primary-ambient metalb       # Deploy MetalLB with IP pools
+make -C deployments/multi-primary-ambient certs        # Generate root CA + per-cluster CAs
+make -C deployments/multi-primary-ambient istio        # Deploy Istio + East-West gateways
+make -C deployments/multi-primary-ambient sample       # Deploy test apps (nginx + curl)
+make -C deployments/multi-primary-ambient waypoint     # Create waypoint gateways (ambient only)
+make -C deployments/multi-primary-ambient sec-baseline # Apply AuthorizationPolicy + PeerAuthentication
+make -C deployments/multi-primary-ambient delete       # Tear down both clusters
+make -C deployments/multi-primary-ambient clear-certs  # Remove generated certificate files
+
+# Sidecar-specific
+make -C deployments/multi-primary-sidecar injection    # Enable sidecar injection
+
+# Per-model help
+make -C deployments/multi-primary-ambient help
+make -C deployments/multi-primary-sidecar help
 ```
 
 ## Architecture
@@ -60,21 +71,37 @@ Both clusters share `MESH_ID=mesh1`.
 ### Certificate Hierarchy
 
 ```
-certs/root-cert.pem        ← Shared root CA (self-signed)
-certs/istio-1/ca-cert.pem  ← Cluster 1 intermediate CA
-certs/istio-2/ca-cert.pem  ← Cluster 2 intermediate CA
+deployments/<model>/certs/root-cert.pem        ← Shared root CA (self-signed)
+deployments/<model>/certs/istio-1/ca-cert.pem  ← Cluster 1 intermediate CA
+deployments/<model>/certs/istio-2/ca-cert.pem  ← Cluster 2 intermediate CA
 ```
 
 Certificates are generated via `tools/certs/Makefile.selfsigned.mk` using OpenSSL. The `cacerts` Kubernetes secret is created in each cluster's `istio-system` namespace before Istio is installed. All certs use 4096-bit RSA keys with 3650-day validity (demo only).
 
 ### Code Organization
 
-- **`Makefile`** — Orchestration entry point; defines cluster variables and sequences targets.
-- **`scripts/kind.sh`** — `create_cluster()`: creates a Kind cluster with custom CIDRs via heredoc config.
-- **`scripts/istio.sh`** — `deploy_istio()` and `deploy_istio_sidecar()`: Helm-based Istio install with ambient/sidecar profiles; `deploy_sample()`: applies test manifests with cluster name substitution.
-- **`scripts/metalb.sh`** — `deploy_metalb()`: computes IP pool range from Kind subnet, installs MetalLB, creates IPAddressPool.
-- **`samples/`** — Kubernetes manifests for test apps, waypoint gateways, and security policies.
-- **`tools/certs/`** — Makefile includes for self-signed CA generation and k8s-sourced root CA signing.
+```
+Makefile                          ← Dispatcher: auto-discovers models, delegates via make -C
+scripts/kind.sh                   ← create_cluster(): shared by all models
+scripts/metalb.sh                 ← deploy_metalb(): shared by all models
+tools/certs/                      ← Makefile includes for self-signed CA generation
+deployments/
+  multi-primary-ambient/
+    Makefile                      ← Full orchestration for ambient mode
+    scripts/istio.sh              ← deploy_istio() (ambient), deploy_sample()
+    samples/                      ← Manifests: app1, curl-pod, waypoint, security/
+  multi-primary-sidecar/
+    Makefile                      ← Full orchestration for sidecar mode
+    scripts/istio.sh              ← deploy_istio() (sidecar), deploy_sample(), enable_injection()
+    samples/                      ← Manifests: app1, curl-pod, security/
+```
+
+### Adding a New Deployment Model
+
+1. Create `deployments/<model-name>/` with `Makefile`, `scripts/istio.sh`, and `samples/`.
+2. Reference shared scripts via `$(REPO_ROOT)/scripts/kind.sh` and `$(REPO_ROOT)/scripts/metalb.sh`.
+3. Include cert tooling via `include $(REPO_ROOT)/tools/certs/Makefile.selfsigned.mk`.
+4. The root `Makefile` auto-discovers models — no changes needed there.
 
 ### Istio Helm Components (ambient mode)
 
@@ -82,8 +109,8 @@ Installed in this order: `istio-base` → `istiod` → `istio-cni` → `ztunnel`
 
 ### Ambient vs Sidecar Mode
 
-- **Ambient** (`make run`): Uses ztunnel for L4 mTLS, optional waypoint gateways for L7. Namespaces are labeled `istio.io/dataplane-mode: ambient`.
-- **Sidecar** (`make run-sidecar`): Uses traditional Envoy sidecar injection. Namespaces are labeled for injection.
+- **Ambient** (`multi-primary-ambient`): Uses ztunnel for L4 mTLS, optional waypoint gateways for L7. Namespaces are labeled `istio.io/dataplane-mode: ambient`.
+- **Sidecar** (`multi-primary-sidecar`): Uses traditional Envoy sidecar injection. Namespaces are labeled for injection.
 
 ### `make vars` Pattern
 

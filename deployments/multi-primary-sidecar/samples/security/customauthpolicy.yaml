@@ -1,0 +1,14 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: app1
+  namespace: app1
+spec:
+  targetRefs:
+  - kind: Service
+    name: app1
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        namespaces: ["curl"]
